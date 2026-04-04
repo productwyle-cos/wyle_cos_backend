@@ -4,9 +4,10 @@
   "description": "Wyle COS Backend — WhatsApp session manager and obligation detection engine",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc --skipLibCheck",
     "start": "node dist/index.js",
-    "dev": "ts-node-dev --respawn --transpile-only src/index.ts"
+    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "render-build": "npm install && npm run build"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.5",

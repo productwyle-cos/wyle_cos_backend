@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: wyle-cos-backend
+    runtime: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      - key: API_SECRET
+        generateValue: true
+      - key: AUTH_DIR
+        value: ./auth_sessions
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false

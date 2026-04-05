@@ -120,6 +120,8 @@ async function createSocket(): Promise<void> {
     syncFullHistory: false,
     markOnlineOnConnect: false,
     generateHighQualityLinkPreview: false,
+    keepAliveIntervalMs: 15_000,   // ping WhatsApp every 15s to keep connection alive
+    connectTimeoutMs: 60_000,      // allow 60s for initial connection
   });
 
   // QR code event
@@ -148,7 +150,8 @@ async function createSocket(): Promise<void> {
       const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
-      console.log(`[WA] Disconnected (code: ${statusCode}, reconnect: ${shouldReconnect})`);
+      const errMsg = (lastDisconnect?.error as any)?.message ?? 'no message';
+      console.log(`[WA] Disconnected (code: ${statusCode}, reconnect: ${shouldReconnect}, error: ${errMsg})`);
       store.setDisconnected();
 
       if (shouldReconnect && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {

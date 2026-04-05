@@ -80,16 +80,20 @@ function extractText(msg: proto.IWebMessageInfo): string | null {
 
 // ── Process a single incoming message ────────────────────────────────────────
 async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
-  const msgId = msg.key.id ?? '';
+  const msgId   = msg.key.id ?? '';
+  const fromJid = msg.key.remoteJid ?? '?';
 
-  if (msg.key.fromMe) return;
-  if (store.isProcessed(msgId)) return;
+  // Verbose per-message debug — shows exactly which filter triggers
+  console.log(`[WA] handleMessage: id=${msgId} from=${fromJid} fromMe=${msg.key.fromMe} hasMsg=${!!msg.message}`);
+
+  if (msg.key.fromMe) { console.log(`[WA] Skip (fromMe): ${fromJid}`); return; }
+  if (store.isProcessed(msgId)) { console.log(`[WA] Skip (already processed): ${msgId}`); return; }
   store.markProcessed(msgId);
 
   const remoteJid = msg.key.remoteJid ?? '';
-  if (isJidBroadcast(remoteJid)) return;
+  if (isJidBroadcast(remoteJid)) { console.log(`[WA] Skip (broadcast): ${remoteJid}`); return; }
   // @lid = WhatsApp internal linked-device protocol messages (no user text)
-  if (remoteJid.endsWith('@lid')) return;
+  if (remoteJid.endsWith('@lid')) { console.log(`[WA] Skip (@lid protocol): ${remoteJid}`); return; }
 
   const text = extractText(msg);
   console.log(`[WA] Raw message received — from: ${remoteJid}, text: ${text ? `"${text.slice(0, 80)}"` : 'null'}`);

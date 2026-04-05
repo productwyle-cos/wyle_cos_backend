@@ -9,6 +9,7 @@ import makeWASocket, {
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
   proto,
+  AuthenticationState,
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import QRCode from 'qrcode';
@@ -18,12 +19,18 @@ import { classifyMessage } from '../services/classifier';
 import { WhatsAppMessage } from '../types';
 import { useRedisAuthState, useFilesystemAuthState, isRedisConfigured } from './redisAuthState';
 
-const logger = pino({ level: 'silent' }); // Baileys internal logger — keep silent in prod
+const logger = pino({ level: 'silent' });
 
 let sock: ReturnType<typeof makeWASocket> | null = null;
 let reconnectAttempts = 0;
-const MAX_RECONNECT_ATTEMPTS = 5;
-let currentClearState: (() => Promise<void>) | null = null;
+const MAX_RECONNECT_ATTEMPTS = 10;
+
+// ── Persist auth state IN MEMORY across reconnects (fixes race condition) ──────
+// Only re-read from Redis/filesystem on cold start (authState === null).
+// After 515 reconnects, we reuse the same state object (already updated in-memory).
+let authState: AuthenticationState | null = null;
+let authSaveCreds: (() => Promise<void>) | null = null;
+let authClearState: (() => Promise<void>) | null = null;
 
 // ── Extract phone number from JID ─────────────────────────────────────────────
 function jidToPhone(jid: string): string {
@@ -31,10 +38,9 @@ function jidToPhone(jid: string): string {
 }
 
 // ── Extract display name from message ────────────────────────────────────────
-function getSenderName(msg: proto.IWebMessageInfo, sock: ReturnType<typeof makeWASocket>): string {
-  // sock.contacts / sock.store are version-dependent — use optional chaining with any cast
+function getSenderName(msg: proto.IWebMessageInfo): string {
   const sockAny = sock as any;
-  const contactsName = sockAny.contacts?.[msg.key.participant ?? msg.key.remoteJid ?? '']?.name;
+  const contactsName = sockAny?.contacts?.[msg.key.participant ?? msg.key.remoteJid ?? '']?.name;
   return (
     msg.pushName ??
     contactsName ??
@@ -60,7 +66,6 @@ function extractText(msg: proto.IWebMessageInfo): string | null {
 async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
   const msgId = msg.key.id ?? '';
 
-  // Skip outgoing messages (sent BY the user), broadcasts, and already-processed
   if (msg.key.fromMe) return;
   if (store.isProcessed(msgId)) return;
   store.markProcessed(msgId);
@@ -69,13 +74,13 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
   if (isJidBroadcast(remoteJid)) return;
 
   const text = extractText(msg);
-  console.log(`[WA] Raw message received — remoteJid: ${remoteJid}, text: ${text ? `"${text.slice(0,80)}"` : 'null (no text)'}`);
+  console.log(`[WA] Raw message received — from: ${remoteJid}, text: ${text ? `"${text.slice(0, 80)}"` : 'null'}`);
   if (!text || text.trim().length < 2) return;
 
   const isGroup = isJidGroup(remoteJid) ?? false;
   const senderJid = (isGroup ? msg.key.participant : remoteJid) ?? remoteJid;
   const senderPhone = jidToPhone(senderJid);
-  const senderName = getSenderName(msg, sock!);
+  const senderName = getSenderName(msg);
 
   const waMessage: WhatsAppMessage = {
     id:          msgId,
@@ -91,7 +96,6 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
 
   console.log(`[WA] Message from ${senderName}: "${text.slice(0, 60)}"`);
 
-  // Classify and create obligation if actionable
   const obligation = await classifyMessage(waMessage);
   if (obligation) {
     store.addObligation(obligation);
@@ -99,37 +103,26 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
   }
 }
 
-// ── Connect / reconnect ───────────────────────────────────────────────────────
-export async function connectWhatsApp(): Promise<void> {
-  const useRedis = isRedisConfigured();
-  console.log(`[WA] Auth storage: ${useRedis ? 'Upstash Redis ✅' : 'Filesystem (ephemeral)'}`);
-
-  const { state, saveCreds, clearState } = useRedis
-    ? await useRedisAuthState()
-    : await useFilesystemAuthState();
-
-  // Store clearState for use in disconnectWhatsApp
-  currentClearState = clearState;
-
+// ── Create socket with current in-memory auth state ──────────────────────────
+async function createSocket(): Promise<void> {
   const { version } = await fetchLatestBaileysVersion();
-
   console.log(`[WA] Starting Baileys v${version.join('.')}`);
 
   sock = makeWASocket({
     version,
     logger,
-    printQRInTerminal: true, // Show QR in terminal as fallback
+    printQRInTerminal: false,
     auth: {
-      creds: state.creds,
-      keys: makeCacheableSignalKeyStore(state.keys, logger),
+      creds: authState!.creds,
+      keys: makeCacheableSignalKeyStore(authState!.keys, logger),
     },
     browser: ['Ubuntu', 'Chrome', '120.0.6099.71'],
     syncFullHistory: false,
-    markOnlineOnConnect: false, // Don't show "online" in WA to avoid detection
+    markOnlineOnConnect: false,
     generateHighQualityLinkPreview: false,
   });
 
-  // ── QR code event ──────────────────────────────────────────────────────────
+  // QR code event
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
@@ -160,24 +153,34 @@ export async function connectWhatsApp(): Promise<void> {
 
       if (shouldReconnect && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
         reconnectAttempts++;
-        // After QR scan (515 = restart required), reconnect immediately
-        const delay = statusCode === 515 ? 1000 : Math.min(5000 * reconnectAttempts, 30000);
-        console.log(`[WA] Reconnecting in ${delay / 1000}s (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
-        setTimeout(connectWhatsApp, delay);
+        // After QR scan (515 = restart required by WA), reconnect fast using same in-memory state
+        const delay = statusCode === 515 ? 500 : Math.min(3000 * reconnectAttempts, 30000);
+        console.log(`[WA] Reconnecting in ${delay}ms (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
+        setTimeout(createSocket, delay); // ← reuse existing authState, don't re-read Redis
       } else if (statusCode === DisconnectReason.loggedOut) {
-        console.log('[WA] Logged out — clearing auth state');
-        if (currentClearState) await currentClearState();
+        console.log('[WA] Logged out — clearing auth and restarting fresh');
+        authState = null; // Force re-read from Redis/filesystem on next connect
+        if (authClearState) await authClearState();
         setTimeout(connectWhatsApp, 3000);
+      } else if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        console.log('[WA] Max reconnects reached — resetting auth state');
+        authState = null; // Force fresh read
+        reconnectAttempts = 0;
+        setTimeout(connectWhatsApp, 5000);
       }
     }
   });
 
-  // ── Save credentials when updated ─────────────────────────────────────────
-  sock.ev.on('creds.update', saveCreds);
+  // Save credentials — updates in-memory state AND persists to Redis/filesystem
+  sock.ev.on('creds.update', async () => {
+    if (authSaveCreds) {
+      await authSaveCreds();
+      console.log('[WA] Credentials updated and saved');
+    }
+  });
 
-  // ── Incoming messages ──────────────────────────────────────────────────────
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify') return; // Only process real-time notifications
+    if (type !== 'notify') return;
     for (const msg of messages) {
       await handleMessage(msg).catch(err => {
         console.error('[WA] Error handling message:', err);
@@ -186,12 +189,26 @@ export async function connectWhatsApp(): Promise<void> {
   });
 }
 
-// ── Send a message (called when user approves a reply) ───────────────────────
+// ── Connect — loads auth state fresh from storage, then creates socket ────────
+export async function connectWhatsApp(): Promise<void> {
+  const useRedis = isRedisConfigured();
+  console.log(`[WA] Auth storage: ${useRedis ? 'Upstash Redis ✅' : 'Filesystem (ephemeral)'}`);
+
+  // Load auth state from storage (only on cold start or after logout)
+  const auth = useRedis
+    ? await useRedisAuthState()
+    : await useFilesystemAuthState();
+
+  authState      = auth.state;
+  authSaveCreds  = auth.saveCreds;
+  authClearState = auth.clearState;
+
+  await createSocket();
+}
+
+// ── Send a message ────────────────────────────────────────────────────────────
 export async function sendWhatsAppMessage(chatId: string, text: string): Promise<boolean> {
-  if (!sock) {
-    console.error('[WA] Cannot send — not connected');
-    return false;
-  }
+  if (!sock) { console.error('[WA] Cannot send — not connected'); return false; }
   try {
     await sock.sendMessage(chatId, { text });
     console.log(`[WA] ✅ Message sent to ${chatId}`);
@@ -205,9 +222,10 @@ export async function sendWhatsAppMessage(chatId: string, text: string): Promise
 // ── Disconnect cleanly ────────────────────────────────────────────────────────
 export async function disconnectWhatsApp(): Promise<void> {
   if (!sock) return;
-  await sock.logout();
+  try { await sock.logout(); } catch {}
   sock = null;
+  authState = null;
   store.setDisconnected();
-  if (currentClearState) await currentClearState();
+  if (authClearState) await authClearState();
   console.log('[WA] Disconnected and auth cleared');
 }

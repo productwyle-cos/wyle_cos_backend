@@ -85,15 +85,19 @@ function extractText(msg: proto.IWebMessageInfo): string | null {
     null
   );
 
-  // If still null, dump the raw keys so we can identify the missing field
+  // If still null, dump structure to identify missing field
   if (!text) {
     const topKey = Object.keys(m)[0];
     const topVal = (m as any)[topKey];
-    console.log(`[WA] extractText miss — type=${topKey}, keys=${Object.keys(topVal ?? {}).join(',')}`);
-    // Log nested message if it exists
-    if (topVal?.message) {
-      console.log(`[WA] nested .message keys=${Object.keys(topVal.message).join(',')}`);
+    // Show only non-null primitive values to find where the text is hiding
+    const nonNull: Record<string, any> = {};
+    for (const k of Object.keys(topVal ?? {})) {
+      const v = topVal[k];
+      if (v !== null && v !== undefined) {
+        nonNull[k] = typeof v === 'object' ? `[object:${Object.keys(v).join(',')}]` : v;
+      }
     }
+    console.log(`[WA] extractText miss — type=${topKey}, nonNullValues=${JSON.stringify(nonNull)}`);
   }
 
   return text;

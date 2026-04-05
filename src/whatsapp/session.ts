@@ -18,7 +18,7 @@ import pino from 'pino';
 import { store } from './store';
 import { classifyMessage } from '../services/classifier';
 import { WhatsAppMessage } from '../types';
-import { useRedisAuthState, useFilesystemAuthState, isRedisConfigured } from './redisAuthState';
+import { useRedisAuthState, useFilesystemAuthState, isRedisConfigured, redisDeleteSessionKeys } from './redisAuthState';
 
 const logger = pino({ level: 'silent' });
 
@@ -228,15 +228,21 @@ async function createSocket(): Promise<void> {
 
       if (shouldReconnect && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
         reconnectAttempts++;
-        // 515 = restart required after QR scan → fast reconnect
-        // 440 = conflict (two sessions fighting) → wait longer so WA clears the old session
-        // others → exponential backoff
-        const delay = statusCode === 515 ? 500          // post-QR restart → fast
-                    : statusCode === 440 ? 15_000        // conflict → wait for WA to clear
-                    : statusCode === 428 ? 20_000        // terminated → wait longer so WA clears retry queue
+        // 515 = restart required after QR scan → fast
+        // 440 = conflict → wait for WA to clear old session
+        // 428 = "Connection Terminated" caused by stale signal sessions (Migrating to v1 → SessionError)
+        //       → wipe session keys from Redis so next connect doesn't hit the migration bug
+        const delay = statusCode === 515 ? 500
+                    : statusCode === 440 ? 15_000
+                    : statusCode === 428 ? 20_000
                     : Math.min(3000 * reconnectAttempts, 30_000);
+
+        if (statusCode === 428) {
+          redisDeleteSessionKeys().catch(e => console.error('[WA] Session key cleanup failed:', e));
+        }
+
         console.log(`[WA] Reconnecting in ${delay}ms (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
-        setTimeout(createSocket, delay); // ← reuse existing authState, don't re-read Redis
+        setTimeout(createSocket, delay);
       } else if (statusCode === DisconnectReason.loggedOut) {
         console.log('[WA] Logged out — clearing auth and restarting fresh');
         authState = null; // Force re-read from Redis/filesystem on next connect

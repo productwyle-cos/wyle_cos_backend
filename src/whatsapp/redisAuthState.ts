@@ -62,6 +62,34 @@ export async function redisFlushAll(): Promise<void> {
   }
 }
 
+// Delete all signal session keys (wa_auth:key:session:*) without touching creds.
+// Called before each 428 reconnect so stale v0 sessions don't block migration.
+export async function redisDeleteSessionKeys(): Promise<void> {
+  if (!REDIS_URL || !REDIS_TOKEN) return;
+  try {
+    // KEYS returns all keys matching the pattern
+    const res = await fetch(
+      `${REDIS_URL}/keys/${encodeURIComponent(`${KEY_PREFIX}key:session:*`)}`,
+      { headers: { Authorization: `Bearer ${REDIS_TOKEN}` } }
+    );
+    const data = await res.json() as { result: string[] };
+    const keys: string[] = data.result ?? [];
+    if (keys.length === 0) {
+      console.log('[Redis] No session keys to delete');
+      return;
+    }
+    // DEL key1 key2 ... (multi-key delete in one request)
+    const delPath = keys.map(k => encodeURIComponent(k)).join('/');
+    await fetch(`${REDIS_URL}/del/${delPath}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${REDIS_TOKEN}` },
+    });
+    console.log(`[Redis] Deleted ${keys.length} session key(s)`);
+  } catch (e) {
+    console.error('[Redis] redisDeleteSessionKeys failed:', e);
+  }
+}
+
 // ── Check if Redis is configured ──────────────────────────────────────────────
 export function isRedisConfigured(): boolean {
   return !!(REDIS_URL && REDIS_TOKEN);

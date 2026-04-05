@@ -34,9 +34,12 @@ function jidToPhone(jid: string): string {
 
 // ── Extract display name from message ────────────────────────────────────────
 function getSenderName(msg: proto.IWebMessageInfo, sock: ReturnType<typeof makeWASocket>): string {
+  // sock.contacts / sock.store are version-dependent — use optional chaining with any cast
+  const sockAny = sock as any;
+  const contactsName = sockAny.contacts?.[msg.key.participant ?? msg.key.remoteJid ?? '']?.name;
   return (
     msg.pushName ??
-    sock.contacts[msg.key.participant ?? msg.key.remoteJid ?? '']?.name ??
+    contactsName ??
     jidToPhone(msg.key.participant ?? msg.key.remoteJid ?? '')
   );
 }
@@ -70,7 +73,7 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
   const text = extractText(msg);
   if (!text || text.trim().length < 2) return;
 
-  const isGroup = isJidGroup(remoteJid);
+  const isGroup = isJidGroup(remoteJid) ?? false;
   const senderJid = (isGroup ? msg.key.participant : remoteJid) ?? remoteJid;
   const senderPhone = jidToPhone(senderJid);
   const senderName = getSenderName(msg, sock!);
@@ -84,7 +87,7 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
     text:        text.trim(),
     timestamp:   (msg.messageTimestamp as number) ?? Math.floor(Date.now() / 1000),
     isGroup,
-    groupName:   isGroup ? (sock!.chats[remoteJid]?.name ?? remoteJid) : undefined,
+    groupName:   isGroup ? ((sock as any).chats?.[remoteJid]?.name ?? remoteJid) : undefined,
   };
 
   console.log(`[WA] Message from ${senderName}: "${text.slice(0, 60)}"`);

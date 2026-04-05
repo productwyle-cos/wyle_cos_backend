@@ -195,8 +195,9 @@ async function createSocket(): Promise<void> {
         // 515 = restart required after QR scan → fast reconnect
         // 440 = conflict (two sessions fighting) → wait longer so WA clears the old session
         // others → exponential backoff
-        const delay = statusCode === 515 ? 500
-                    : statusCode === 440 ? 10_000
+        const delay = statusCode === 515 ? 500          // post-QR restart → fast
+                    : statusCode === 440 ? 10_000        // conflict → wait for WA to clear
+                    : statusCode === 428 ? 8_000         // connection closed mid-flight → wait
                     : Math.min(3000 * reconnectAttempts, 30_000);
         console.log(`[WA] Reconnecting in ${delay}ms (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
         setTimeout(createSocket, delay); // ← reuse existing authState, don't re-read Redis

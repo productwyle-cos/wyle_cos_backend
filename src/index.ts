@@ -44,6 +44,43 @@ app.use((_req, res) => {
   res.status(404).json({ error: 'Not found' });
 });
 
+// ── Global error guards — prevent Baileys internal errors from crashing Render ──
+// Baileys' sendRetryRequest / sendPeerDataOperation can throw "Connection Closed"
+// (code 428) as an unhandled rejection when the WebSocket drops mid-flight.
+// Without this handler Node exits, corrupting the Redis session state.
+process.on('unhandledRejection', (reason: any) => {
+  const msg = reason?.message ?? String(reason);
+  // Suppress known non-fatal Baileys internal errors
+  if (
+    msg.includes('Connection Closed') ||
+    msg.includes('Connection Terminated') ||
+    msg.includes('Connection Lost') ||
+    msg.includes('ECONNRESET') ||
+    msg.includes('EPIPE')
+  ) {
+    console.warn('[Global] Suppressed non-fatal unhandledRejection:', msg);
+    return;
+  }
+  // For anything else, log but still don't crash
+  console.error('[Global] Unhandled rejection (non-fatal):', reason);
+});
+
+process.on('uncaughtException', (err: Error) => {
+  const msg = err?.message ?? String(err);
+  if (
+    msg.includes('Connection Closed') ||
+    msg.includes('Connection Terminated') ||
+    msg.includes('ECONNRESET') ||
+    msg.includes('EPIPE')
+  ) {
+    console.warn('[Global] Suppressed non-fatal uncaughtException:', msg);
+    return;
+  }
+  // Fatal — log and exit cleanly so Render restarts us
+  console.error('[Global] Fatal uncaughtException:', err);
+  process.exit(1);
+});
+
 // ── Start ──────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`\n🚀 Wyle COS Backend running on port ${PORT}`);

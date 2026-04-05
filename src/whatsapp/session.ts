@@ -70,7 +70,7 @@ function extractText(msg: proto.IWebMessageInfo): string | null {
     m.viewOnceMessage?.message?.conversation ??
     m.viewOnceMessage?.message?.extendedTextMessage?.text ??
     // Forwarded / quoted messages
-    m.forwardedMessage?.conversation ??
+    (m as any).forwardedMessage?.conversation ??
     // Button/list replies
     (m as any).buttonsResponseMessage?.selectedDisplayText ??
     (m as any).listResponseMessage?.title ??

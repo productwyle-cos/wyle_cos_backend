@@ -62,9 +62,12 @@ function extractText(msg: proto.IWebMessageInfo): string | null {
   const msgType = Object.keys(m)[0] ?? 'unknown';
   console.log(`[WA] Message type: ${msgType}`);
 
-  return (
+  const text = (
     m.conversation ??
     m.extendedTextMessage?.text ??
+    // Device-sent wrapper (multi-device @lid routing — message is double-wrapped)
+    (m as any).deviceSentMessage?.message?.conversation ??
+    (m as any).deviceSentMessage?.message?.extendedTextMessage?.text ??
     m.imageMessage?.caption ??
     m.videoMessage?.caption ??
     m.documentMessage?.caption ??
@@ -81,6 +84,19 @@ function extractText(msg: proto.IWebMessageInfo): string | null {
     (m as any).listResponseMessage?.title ??
     null
   );
+
+  // If still null, dump the raw keys so we can identify the missing field
+  if (!text) {
+    const topKey = Object.keys(m)[0];
+    const topVal = (m as any)[topKey];
+    console.log(`[WA] extractText miss — type=${topKey}, keys=${Object.keys(topVal ?? {}).join(',')}`);
+    // Log nested message if it exists
+    if (topVal?.message) {
+      console.log(`[WA] nested .message keys=${Object.keys(topVal.message).join(',')}`);
+    }
+  }
+
+  return text;
 }
 
 // ── Process a single incoming message ────────────────────────────────────────

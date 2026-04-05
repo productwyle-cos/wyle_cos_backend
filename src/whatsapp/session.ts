@@ -180,7 +180,11 @@ async function createSocket(): Promise<void> {
   });
 
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify') return;
+    console.log(`[WA] messages.upsert fired — type: ${type}, count: ${messages.length}`);
+    if (type !== 'notify') {
+      console.log(`[WA] Skipping non-notify type: ${type}`);
+      return;
+    }
     for (const msg of messages) {
       await handleMessage(msg).catch(err => {
         console.error('[WA] Error handling message:', err);

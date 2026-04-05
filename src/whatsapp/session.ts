@@ -88,6 +88,8 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
 
   const remoteJid = msg.key.remoteJid ?? '';
   if (isJidBroadcast(remoteJid)) return;
+  // @lid = WhatsApp internal linked-device protocol messages (no user text)
+  if (remoteJid.endsWith('@lid')) return;
 
   const text = extractText(msg);
   console.log(`[WA] Raw message received — from: ${remoteJid}, text: ${text ? `"${text.slice(0, 80)}"` : 'null'}`);
@@ -121,6 +123,15 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
 
 // ── Create socket with current in-memory auth state ──────────────────────────
 async function createSocket(): Promise<void> {
+  // Always close the old socket first — prevents "conflict" (code 440) where
+  // Render reconnects while WhatsApp still sees the previous socket as live.
+  if (sock) {
+    try { sock.ws.close(); } catch {}
+    sock = null;
+    // Brief pause so WhatsApp registers the old session as gone
+    await new Promise<void>(r => setTimeout(r, 800));
+  }
+
   const { version } = await fetchLatestBaileysVersion();
   console.log(`[WA] Starting Baileys v${version.join('.')}`);
 
@@ -177,8 +188,12 @@ async function createSocket(): Promise<void> {
 
       if (shouldReconnect && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
         reconnectAttempts++;
-        // After QR scan (515 = restart required by WA), reconnect fast using same in-memory state
-        const delay = statusCode === 515 ? 500 : Math.min(3000 * reconnectAttempts, 30000);
+        // 515 = restart required after QR scan → fast reconnect
+        // 440 = conflict (two sessions fighting) → wait longer so WA clears the old session
+        // others → exponential backoff
+        const delay = statusCode === 515 ? 500
+                    : statusCode === 440 ? 10_000
+                    : Math.min(3000 * reconnectAttempts, 30_000);
         console.log(`[WA] Reconnecting in ${delay}ms (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
         setTimeout(createSocket, delay); // ← reuse existing authState, don't re-read Redis
       } else if (statusCode === DisconnectReason.loggedOut) {

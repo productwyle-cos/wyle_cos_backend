@@ -48,6 +48,20 @@ async function redisDel(key: string): Promise<void> {
   } catch {}
 }
 
+// Flush ALL keys in the Redis DB — used to wipe corrupted signal keys completely
+export async function redisFlushAll(): Promise<void> {
+  if (!REDIS_URL || !REDIS_TOKEN) return;
+  try {
+    await fetch(`${REDIS_URL}/flushall`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${REDIS_TOKEN}` },
+    });
+    console.log('[Redis] FLUSHALL — all auth keys cleared');
+  } catch (e) {
+    console.error('[Redis] FLUSHALL failed:', e);
+  }
+}
+
 // ── Check if Redis is configured ──────────────────────────────────────────────
 export function isRedisConfigured(): boolean {
   return !!(REDIS_URL && REDIS_TOKEN);
@@ -107,8 +121,8 @@ export async function useRedisAuthState(): Promise<{
   };
 
   const clearState = async () => {
-    await redisDel(`${KEY_PREFIX}creds`);
-    console.log('[Redis] Auth state cleared');
+    // Flush ALL keys so corrupted signal keys don't survive (not just creds)
+    await redisFlushAll();
   };
 
   return { state, saveCreds, clearState };

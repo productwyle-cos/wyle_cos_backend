@@ -3,7 +3,8 @@
 
 import { Router, Request, Response } from 'express';
 import { store } from '../whatsapp/store';
-import { sendWhatsAppMessage, disconnectWhatsApp } from '../whatsapp/session';
+import { sendWhatsAppMessage, disconnectWhatsApp, connectWhatsApp } from '../whatsapp/session';
+import { redisFlushAll } from '../whatsapp/redisAuthState';
 
 const router = Router();
 
@@ -106,6 +107,27 @@ router.post('/send', async (req: Request, res: Response) => {
 router.delete('/disconnect', async (_req: Request, res: Response) => {
   await disconnectWhatsApp();
   res.json({ success: true, message: 'WhatsApp session cleared — re-scan QR to reconnect' });
+});
+
+// ── POST /whatsapp/reset ──────────────────────────────────────────────────────
+// Nuclear reset: flush ALL Redis keys (including corrupted signal keys), then
+// restart the session so a fresh QR is generated immediately.
+// Use this when you see "Cannot read properties of undefined (reading 'public')"
+// or any other crypto / signal key corruption error.
+router.post('/reset', async (_req: Request, res: Response) => {
+  console.log('[WA] /reset called — flushing Redis and restarting session');
+  try {
+    await disconnectWhatsApp();         // close socket, clear in-memory state
+    await redisFlushAll();              // wipe ALL Redis keys (signal keys included)
+    setTimeout(() => {
+      connectWhatsApp().catch(err => {
+        console.error('[WA] Reconnect after reset failed:', err);
+      });
+    }, 1000);
+    res.json({ success: true, message: 'Redis flushed — new QR generating in ~3s. Poll /whatsapp/qr' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message ?? String(err) });
+  }
 });
 
 // ── POST /whatsapp/debug/classify ─────────────────────────────────────────────

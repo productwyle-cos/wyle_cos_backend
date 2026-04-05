@@ -54,4 +54,15 @@ app.listen(PORT, () => {
   connectWhatsApp().catch(err => {
     console.error('[Boot] Failed to start WhatsApp session:', err);
   });
+
+  // ── Self-ping to prevent Render free tier from sleeping ──────────────────
+  const SELF_URL = process.env.RENDER_EXTERNAL_URL ?? `http://localhost:${PORT}`;
+  setInterval(async () => {
+    try {
+      await fetch(`${SELF_URL}/health`);
+      console.log('[Ping] Keep-alive sent');
+    } catch {
+      // Ignore ping failures
+    }
+  }, 10 * 60 * 1000); // every 10 minutes
 });

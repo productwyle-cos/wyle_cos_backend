@@ -54,53 +54,78 @@ function getSenderName(msg: proto.IWebMessageInfo): string {
 }
 
 // ── Extract text content from any message type ────────────────────────────────
+// Uses dynamic (bracket) access via the top-level key rather than typed property
+// access (m.extendedTextMessage?.text) because Baileys protobuf Message instances
+// return null via TypeScript typed getters but the correct value via bracket access.
 function extractText(msg: proto.IWebMessageInfo): string | null {
   const m = msg.message;
   if (!m) return null;
 
-  // Log message type for debugging
   const msgType = Object.keys(m)[0] ?? 'unknown';
   console.log(`[WA] Message type: ${msgType}`);
 
-  const text = (
-    m.conversation ??
-    m.extendedTextMessage?.text ??
-    // Device-sent wrapper (multi-device @lid routing — message is double-wrapped)
-    (m as any).deviceSentMessage?.message?.conversation ??
-    (m as any).deviceSentMessage?.message?.extendedTextMessage?.text ??
-    m.imageMessage?.caption ??
-    m.videoMessage?.caption ??
-    m.documentMessage?.caption ??
-    // Ephemeral / disappearing messages
-    m.ephemeralMessage?.message?.conversation ??
-    m.ephemeralMessage?.message?.extendedTextMessage?.text ??
-    // View once messages
-    m.viewOnceMessage?.message?.conversation ??
-    m.viewOnceMessage?.message?.extendedTextMessage?.text ??
-    // Forwarded / quoted messages
-    (m as any).forwardedMessage?.conversation ??
-    // Button/list replies
-    (m as any).buttonsResponseMessage?.selectedDisplayText ??
-    (m as any).listResponseMessage?.title ??
-    null
-  );
+  // Use bracket access on the top-level value — proven to return the real content
+  const v = (m as any)[msgType];
+  if (!v) return null;
 
-  // If still null, dump structure to identify missing field
-  if (!text) {
-    const topKey = Object.keys(m)[0];
-    const topVal = (m as any)[topKey];
-    // Show only non-null primitive values to find where the text is hiding
-    const nonNull: Record<string, any> = {};
-    for (const k of Object.keys(topVal ?? {})) {
-      const v = topVal[k];
-      if (v !== null && v !== undefined) {
-        nonNull[k] = typeof v === 'object' ? `[object:${Object.keys(v).join(',')}]` : v;
-      }
+  switch (msgType) {
+    case 'conversation':
+      return typeof v === 'string' ? v : null;
+
+    case 'extendedTextMessage':
+      return v.text ?? null;
+
+    case 'imageMessage':
+    case 'videoMessage':
+    case 'documentMessage':
+    case 'stickerMessage':
+      return v.caption ?? null;
+
+    // Disappearing / ephemeral messages
+    case 'ephemeralMessage': {
+      const inner = v.message;
+      if (!inner) return null;
+      const innerType = Object.keys(inner)[0] ?? '';
+      return (inner as any)[innerType]?.text ?? (inner as any)[innerType] ?? null;
     }
-    console.log(`[WA] extractText miss — type=${topKey}, nonNullValues=${JSON.stringify(nonNull)}`);
-  }
 
-  return text;
+    // View-once messages
+    case 'viewOnceMessage':
+    case 'viewOnceMessageV2': {
+      const inner = v.message;
+      if (!inner) return null;
+      const innerType = Object.keys(inner)[0] ?? '';
+      return (inner as any)[innerType]?.text ?? null;
+    }
+
+    // Device-sent wrapper (multi-device @lid routing — double-wrapped)
+    case 'deviceSentMessage': {
+      const inner = v.message;
+      if (!inner) return null;
+      const innerType = Object.keys(inner)[0] ?? '';
+      const innerVal = (inner as any)[innerType];
+      return innerType === 'conversation'
+        ? innerVal
+        : innerVal?.text ?? innerVal?.caption ?? null;
+    }
+
+    // Interactive / button / list responses
+    case 'buttonsResponseMessage':
+      return v.selectedButtonId ?? v.selectedDisplayText ?? null;
+    case 'listResponseMessage':
+      return v.singleSelectReply?.selectedRowId ?? v.title ?? null;
+    case 'interactiveResponseMessage':
+      return v.nativeFlowResponseMessage?.paramsJson ?? v.body?.text ?? null;
+
+    // Template button reply
+    case 'templateButtonReplyMessage':
+      return v.selectedDisplayText ?? v.selectedId ?? null;
+
+    default:
+      // Unknown type — log for future handling
+      console.log(`[WA] Unhandled message type: ${msgType}`);
+      return null;
+  }
 }
 
 // ── Process a single incoming message ────────────────────────────────────────

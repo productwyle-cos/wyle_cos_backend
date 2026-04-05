@@ -182,13 +182,14 @@ async function createSocket(): Promise<void> {
     // Allow pre-key upload and other init queries to take as long as needed.
     // Default (20s) is too short for Render free tier → causes 408 timeout → 428 disconnect loop.
     defaultQueryTimeoutMs: 0,
-    // Return real cached messages so Baileys can retry failed decryptions.
-    // Without this, retry requests go out with an empty message and still fail.
+    // Return the cached message for retries, or undefined to SKIP the retry.
+    // Returning { conversation: '' } caused Baileys to fire sendRetryRequest with empty
+    // content → WhatsApp rejected it with 428 → infinite disconnect loop.
+    // Returning undefined tells Baileys "we don't have this message, don't retry it."
     getMessage: async (key) => {
       const cached = await msgStore.loadMessage(key.remoteJid!, key.id!);
       if (cached?.message) return cached.message;
-      console.log('[WA] getMessage miss for:', key.id);
-      return { conversation: '' };
+      return undefined;
     },
   });
 
@@ -231,8 +232,8 @@ async function createSocket(): Promise<void> {
         // 440 = conflict (two sessions fighting) → wait longer so WA clears the old session
         // others → exponential backoff
         const delay = statusCode === 515 ? 500          // post-QR restart → fast
-                    : statusCode === 440 ? 10_000        // conflict → wait for WA to clear
-                    : statusCode === 428 ? 8_000         // connection closed mid-flight → wait
+                    : statusCode === 440 ? 15_000        // conflict → wait for WA to clear
+                    : statusCode === 428 ? 20_000        // terminated → wait longer so WA clears retry queue
                     : Math.min(3000 * reconnectAttempts, 30_000);
         console.log(`[WA] Reconnecting in ${delay}ms (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
         setTimeout(createSocket, delay); // ← reuse existing authState, don't re-read Redis

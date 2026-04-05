@@ -8,6 +8,7 @@ import makeWASocket, {
   isJidGroup,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
+  makeInMemoryStore,
   proto,
   AuthenticationState,
 } from '@whiskeysockets/baileys';
@@ -20,6 +21,10 @@ import { WhatsAppMessage } from '../types';
 import { useRedisAuthState, useFilesystemAuthState, isRedisConfigured } from './redisAuthState';
 
 const logger = pino({ level: 'silent' });
+
+// In-memory message store — used by getMessage() so Baileys can retry
+// encrypted messages that failed to decrypt on first attempt.
+const msgStore = makeInMemoryStore({ logger });
 
 let sock: ReturnType<typeof makeWASocket> | null = null;
 let reconnectAttempts = 0;
@@ -153,12 +158,21 @@ async function createSocket(): Promise<void> {
     generateHighQualityLinkPreview: false,
     keepAliveIntervalMs: 15_000,
     connectTimeoutMs: 60_000,
-    // Required for message retry handling in multi-device mode
+    // Allow pre-key upload and other init queries to take as long as needed.
+    // Default (20s) is too short for Render free tier → causes 408 timeout → 428 disconnect loop.
+    defaultQueryTimeoutMs: 0,
+    // Return real cached messages so Baileys can retry failed decryptions.
+    // Without this, retry requests go out with an empty message and still fail.
     getMessage: async (key) => {
-      console.log('[WA] getMessage called for:', key.id);
+      const cached = await msgStore.loadMessage(key.remoteJid!, key.id!);
+      if (cached?.message) return cached.message;
+      console.log('[WA] getMessage miss for:', key.id);
       return { conversation: '' };
     },
   });
+
+  // Bind the store so it caches every incoming message for getMessage()
+  msgStore.bind(sock.ev);
 
   // QR code event
   sock.ev.on('connection.update', async (update) => {

@@ -97,14 +97,19 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
 
   const remoteJid = msg.key.remoteJid ?? '';
   if (isJidBroadcast(remoteJid)) { console.log(`[WA] Skip (broadcast): ${remoteJid}`); return; }
-  // @lid = WhatsApp internal linked-device protocol messages (no user text)
-  if (remoteJid.endsWith('@lid')) { console.log(`[WA] Skip (@lid protocol): ${remoteJid}`); return; }
+  // @lid = WhatsApp multi-device Linked ID format — can carry real user messages.
+  // Only skip @lid messages that have NO message content (pure protocol frames).
+  if (remoteJid.endsWith('@lid') && !msg.message) {
+    console.log(`[WA] Skip (@lid, no content): ${remoteJid}`);
+    return;
+  }
 
   const text = extractText(msg);
   console.log(`[WA] Raw message received — from: ${remoteJid}, text: ${text ? `"${text.slice(0, 80)}"` : 'null'}`);
   if (!text || text.trim().length < 2) return;
 
-  const isGroup = isJidGroup(remoteJid) ?? false;
+  // @lid JIDs are always 1:1 (not groups) — isJidGroup doesn't understand the format
+  const isGroup = remoteJid.endsWith('@lid') ? false : (isJidGroup(remoteJid) ?? false);
   const senderJid = (isGroup ? msg.key.participant : remoteJid) ?? remoteJid;
   const senderPhone = jidToPhone(senderJid);
   const senderName = getSenderName(msg);

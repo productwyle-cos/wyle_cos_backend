@@ -123,7 +123,7 @@ export async function connectWhatsApp(): Promise<void> {
       creds: state.creds,
       keys: makeCacheableSignalKeyStore(state.keys, logger),
     },
-    browser: ['Wyle COS', 'Chrome', '120.0.0'],
+    browser: ['Ubuntu', 'Chrome', '120.0.6099.71'],
     syncFullHistory: false,
     markOnlineOnConnect: false, // Don't show "online" in WA to avoid detection
     generateHighQualityLinkPreview: false,

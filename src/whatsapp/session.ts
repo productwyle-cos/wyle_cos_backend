@@ -120,8 +120,13 @@ async function createSocket(): Promise<void> {
     syncFullHistory: false,
     markOnlineOnConnect: false,
     generateHighQualityLinkPreview: false,
-    keepAliveIntervalMs: 15_000,   // ping WhatsApp every 15s to keep connection alive
-    connectTimeoutMs: 60_000,      // allow 60s for initial connection
+    keepAliveIntervalMs: 15_000,
+    connectTimeoutMs: 60_000,
+    // Required for message retry handling in multi-device mode
+    getMessage: async (key) => {
+      console.log('[WA] getMessage called for:', key.id);
+      return { conversation: '' };
+    },
   });
 
   // QR code event

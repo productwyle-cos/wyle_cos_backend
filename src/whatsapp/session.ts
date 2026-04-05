@@ -3,7 +3,6 @@
 // Generates QR codes, handles reconnection, and forwards messages to the classifier.
 
 import makeWASocket, {
-  useMultiFileAuthState,
   DisconnectReason,
   isJidBroadcast,
   isJidGroup,
@@ -13,19 +12,18 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import QRCode from 'qrcode';
-import * as fs from 'fs';
-import * as path from 'path';
 import pino from 'pino';
 import { store } from './store';
 import { classifyMessage } from '../services/classifier';
 import { WhatsAppMessage } from '../types';
+import { useRedisAuthState, useFilesystemAuthState, isRedisConfigured } from './redisAuthState';
 
-const AUTH_DIR = process.env.AUTH_DIR ?? './auth_sessions';
 const logger = pino({ level: 'silent' }); // Baileys internal logger — keep silent in prod
 
 let sock: ReturnType<typeof makeWASocket> | null = null;
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;
+let currentClearState: (() => Promise<void>) | null = null;
 
 // ── Extract phone number from JID ─────────────────────────────────────────────
 function jidToPhone(jid: string): string {
@@ -103,12 +101,16 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
 
 // ── Connect / reconnect ───────────────────────────────────────────────────────
 export async function connectWhatsApp(): Promise<void> {
-  // Ensure auth directory exists
-  if (!fs.existsSync(AUTH_DIR)) {
-    fs.mkdirSync(AUTH_DIR, { recursive: true });
-  }
+  const useRedis = isRedisConfigured();
+  console.log(`[WA] Auth storage: ${useRedis ? 'Upstash Redis ✅' : 'Filesystem (ephemeral)'}`);
 
-  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+  const { state, saveCreds, clearState } = useRedis
+    ? await useRedisAuthState()
+    : await useFilesystemAuthState();
+
+  // Store clearState for use in disconnectWhatsApp
+  currentClearState = clearState;
+
   const { version } = await fetchLatestBaileysVersion();
 
   console.log(`[WA] Starting Baileys v${version.join('.')}`);
@@ -163,8 +165,7 @@ export async function connectWhatsApp(): Promise<void> {
         setTimeout(connectWhatsApp, delay);
       } else if (statusCode === DisconnectReason.loggedOut) {
         console.log('[WA] Logged out — clearing auth state');
-        // Clear auth so user can re-scan QR
-        fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+        if (currentClearState) await currentClearState();
         setTimeout(connectWhatsApp, 3000);
       }
     }
@@ -206,7 +207,6 @@ export async function disconnectWhatsApp(): Promise<void> {
   await sock.logout();
   sock = null;
   store.setDisconnected();
-  // Clear auth state so next connect shows fresh QR
-  fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+  if (currentClearState) await currentClearState();
   console.log('[WA] Disconnected and auth cleared');
 }

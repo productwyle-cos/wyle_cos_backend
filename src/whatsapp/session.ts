@@ -118,7 +118,7 @@ export async function connectWhatsApp(): Promise<void> {
   sock = makeWASocket({
     version,
     logger,
-    printQRInTerminal: false, // We handle QR ourselves via the API
+    printQRInTerminal: true, // Show QR in terminal as fallback
     auth: {
       creds: state.creds,
       keys: makeCacheableSignalKeyStore(state.keys, logger),
@@ -160,7 +160,8 @@ export async function connectWhatsApp(): Promise<void> {
 
       if (shouldReconnect && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
         reconnectAttempts++;
-        const delay = Math.min(5000 * reconnectAttempts, 30000); // exponential backoff, max 30s
+        // After QR scan (515 = restart required), reconnect immediately
+        const delay = statusCode === 515 ? 1000 : Math.min(5000 * reconnectAttempts, 30000);
         console.log(`[WA] Reconnecting in ${delay / 1000}s (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
         setTimeout(connectWhatsApp, delay);
       } else if (statusCode === DisconnectReason.loggedOut) {

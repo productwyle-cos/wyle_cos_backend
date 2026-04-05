@@ -52,12 +52,28 @@ function getSenderName(msg: proto.IWebMessageInfo): string {
 function extractText(msg: proto.IWebMessageInfo): string | null {
   const m = msg.message;
   if (!m) return null;
+
+  // Log message type for debugging
+  const msgType = Object.keys(m)[0] ?? 'unknown';
+  console.log(`[WA] Message type: ${msgType}`);
+
   return (
     m.conversation ??
     m.extendedTextMessage?.text ??
     m.imageMessage?.caption ??
     m.videoMessage?.caption ??
     m.documentMessage?.caption ??
+    // Ephemeral / disappearing messages
+    m.ephemeralMessage?.message?.conversation ??
+    m.ephemeralMessage?.message?.extendedTextMessage?.text ??
+    // View once messages
+    m.viewOnceMessage?.message?.conversation ??
+    m.viewOnceMessage?.message?.extendedTextMessage?.text ??
+    // Forwarded / quoted messages
+    m.forwardedMessage?.conversation ??
+    // Button/list replies
+    (m as any).buttonsResponseMessage?.selectedDisplayText ??
+    (m as any).listResponseMessage?.title ??
     null
   );
 }

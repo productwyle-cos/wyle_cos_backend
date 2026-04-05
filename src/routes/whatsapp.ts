@@ -108,4 +108,31 @@ router.delete('/disconnect', async (_req: Request, res: Response) => {
   res.json({ success: true, message: 'WhatsApp session cleared — re-scan QR to reconnect' });
 });
 
+// ── POST /whatsapp/debug/classify ─────────────────────────────────────────────
+// Test the classifier directly with a fake message — no WhatsApp needed
+// Body: { text: string, senderName?: string }
+router.post('/debug/classify', async (req: Request, res: Response) => {
+  const { text, senderName = 'Test Sender' } = req.body as { text?: string; senderName?: string };
+  if (!text) return res.status(400).json({ error: 'text is required' });
+
+  const { classifyMessage } = await import('../services/classifier');
+  const fakeMsg = {
+    id:          `debug_${Date.now()}`,
+    chatId:      '1234567890@s.whatsapp.net',
+    senderJid:   '1234567890@s.whatsapp.net',
+    senderName,
+    senderPhone: '1234567890',
+    text,
+    timestamp:   Math.floor(Date.now() / 1000),
+    isGroup:     false,
+  };
+
+  const obligation = await classifyMessage(fakeMsg);
+  if (obligation) {
+    store.addObligation(obligation);
+    return res.json({ detected: true, obligation });
+  }
+  res.json({ detected: false, message: 'Message classified as not actionable' });
+});
+
 export default router;

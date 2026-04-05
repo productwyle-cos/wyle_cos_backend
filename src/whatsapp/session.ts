@@ -71,6 +71,7 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
   if (isJidBroadcast(remoteJid)) return;
 
   const text = extractText(msg);
+  console.log(`[WA] Raw message received — remoteJid: ${remoteJid}, text: ${text ? `"${text.slice(0,80)}"` : 'null (no text)'}`);
   if (!text || text.trim().length < 2) return;
 
   const isGroup = isJidGroup(remoteJid) ?? false;
